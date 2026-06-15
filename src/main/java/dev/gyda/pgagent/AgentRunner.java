@@ -64,6 +64,7 @@ public class AgentRunner implements CommandLineRunner {
             log.info("  [{}] {}  calls={}  mean={} ms  total={} ms",
                     f.pathology(), abbreviate(f.query().queryText()),
                     f.query().calls(), fmt(f.query().meanTimeMs()), fmt(f.query().totalTimeMs()));
+            log.info("    Confidence:   {}", f.confidence());
             log.info("    Root cause:   {}", f.rootCause());
             log.info("    Proposed fix: {}", f.proposedFix());
             log.info("    Evidence:     {}", f.evidence());

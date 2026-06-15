@@ -9,6 +9,7 @@ import dev.gyda.pgagent.model.AgentRunResult;
 import dev.gyda.pgagent.model.BenchmarkResult;
 import dev.gyda.pgagent.model.Classification;
 import dev.gyda.pgagent.model.ColumnStat;
+import dev.gyda.pgagent.model.Confidence;
 import dev.gyda.pgagent.model.Finding;
 import dev.gyda.pgagent.model.HypoResult;
 import dev.gyda.pgagent.model.Pathology;
@@ -142,7 +143,11 @@ public class AgentLoop {
             }
 
             // --- CLASSIFY ---
-            String userPrompt = buildPrompt(q, planForLlm, facts.toString(), paramsResolved && isSelect);
+            // Peer queries give the classifier the context to spot N+1 parent/child relationships
+            // (a child lookup whose calls ≈ parent.calls × rows-per-parent), instead of judging
+            // each query in isolation.
+            String peers = peerContext(candidates, q);
+            String userPrompt = buildPrompt(q, planForLlm, facts.toString(), peers, paramsResolved && isSelect);
             String llmResponse;
             try {
                 llmResponse = llm.complete(Prompts.DIAGNOSE_CLASSIFY_SYSTEM, userPrompt);
@@ -157,8 +162,8 @@ public class AgentLoop {
                 continue;
             }
 
-            log.info("  CLASSIFY: {} / {}  fix: {}",
-                    hypothesis.classification(), hypothesis.pathology(),
+            log.info("  CLASSIFY: {} / {} (confidence {})  fix: {}",
+                    hypothesis.classification(), hypothesis.pathology(), hypothesis.confidence(),
                     abbreviate(hypothesis.proposedFix()));
 
             if (hypothesis.classification() == Classification.APP_PROBLEM) {
@@ -209,7 +214,8 @@ public class AgentLoop {
                 if (revision.discarded()) {
                     log.info("  EVALUATE: hypothesis discarded — {}", revision.reason());
                     hypothesis = new Hypothesis(
-                            hypothesis.classification(), hypothesis.pathology(), hypothesis.evidence(),
+                            hypothesis.classification(), hypothesis.pathology(), hypothesis.confidence(),
+                            hypothesis.evidence(),
                             revision.reason().isBlank() ? hypothesis.rootCause() : revision.reason(),
                             "No effective database-side fix found (hypothesis discarded after HypoPG testing).",
                             hypothesis.tradeoffs());
@@ -261,17 +267,30 @@ public class AgentLoop {
                 }
             }
 
+            // --- CROSS-CHECK ---
+            // Verify the LLM's claimed signal actually exists in the data; if not, downgrade
+            // confidence to LOW and annotate the evidence. Deterministic guard, not classification.
+            Confidence confidence = hypothesis.confidence();
+            String evidence = hypothesis.evidence();
+            Optional<String> mismatch = evidenceMismatch(hypothesis, q, plan);
+            if (mismatch.isPresent()) {
+                confidence = Confidence.LOW;
+                evidence = evidence + "  [auto-check: " + mismatch.get() + "]";
+                log.warn("  CROSS-CHECK: {} — confidence downgraded to LOW.", mismatch.get());
+            }
+
             findings.add(new Finding(
                     q,
                     hypothesis.classification(),
                     hypothesis.pathology(),
-                    hypothesis.evidence(),
+                    evidence,
                     hypothesis.rootCause(),
                     hypothesis.proposedFix(),
                     hypothesis.tradeoffs(),
                     verified,
                     hypothesis.classification() == Classification.APP_PROBLEM ? null : hypoResult,
-                    beforeMs, afterMs, delta));
+                    beforeMs, afterMs, delta,
+                    confidence));
         }
 
         String stopReason = iteration >= maxIter ? "max-iterations reached" : "all candidates processed";
@@ -336,9 +355,11 @@ public class AgentLoop {
                     n.path("classification").asText(), Classification.DB_PROBLEM);
             Pathology path = parseEnum(Pathology.class,
                     n.path("pathology").asText(), Pathology.OTHER);
+            Confidence conf = parseEnum(Confidence.class,
+                    n.path("confidence").asText(), Confidence.MEDIUM);
 
             return new Hypothesis(
-                    cls, path,
+                    cls, path, conf,
                     n.path("evidence").asText(""),
                     n.path("root_cause").asText(""),
                     n.path("proposed_fix").asText(""),
@@ -357,7 +378,7 @@ public class AgentLoop {
         }
     }
 
-    private static String buildPrompt(SlowQuery q, String plan, String facts, boolean analyzed) {
+    private static String buildPrompt(SlowQuery q, String plan, String facts, String peers, boolean analyzed) {
         String planMode = analyzed
                 ? "EXPLAIN (ANALYZE, BUFFERS) — executed with parameter values sampled from pg_stats; "
                   + "representative of real data but not the exact production values"
@@ -369,7 +390,52 @@ public class AgentLoop {
                 + "  total=" + fmt(q.totalTimeMs()) + "ms"
                 + "  rows_per_call=" + fmt(q.calls() > 0 ? (double) q.rows() / q.calls() : 0) + "\n\n"
                 + "EXECUTION PLAN (" + planMode + "):\n" + plan + "\n\n"
-                + (facts.isBlank() ? "" : "TABLE FACTS:\n" + facts);
+                + (facts.isBlank() ? "" : "TABLE FACTS:\n" + facts + "\n")
+                + (peers.isBlank() ? "" : "OTHER FREQUENT QUERIES IN THIS WINDOW "
+                    + "(for spotting N+1 parent/child relationships):\n" + peers);
+    }
+
+    // Compact summary of the other candidates, so the classifier can correlate a child lookup
+    // with the parent query that drives it.
+    private static String peerContext(List<SlowQuery> candidates, SlowQuery current) {
+        StringBuilder sb = new StringBuilder();
+        for (SlowQuery p : candidates) {
+            if (p == current) continue;
+            double rpc = p.calls() > 0 ? (double) p.rows() / p.calls() : 0;
+            sb.append("  calls=").append(p.calls())
+              .append("  rows/call=").append(fmt(rpc))
+              .append("  ").append(abbreviate(p.queryText())).append("\n");
+        }
+        return sb.toString();
+    }
+
+    // Deterministic sanity check: does the data actually contain the signal the LLM claimed?
+    // Returns a mismatch description when it does not. Never reclassifies — only flags.
+    private static Optional<String> evidenceMismatch(Hypothesis h, SlowQuery q, String plan) {
+        String text = q.queryText().toLowerCase();
+        String planLower = plan.toLowerCase();
+        double rowsPerCall = q.calls() > 0 ? (double) q.rows() / q.calls() : 0;
+        return switch (h.pathology()) {
+            case N_PLUS_ONE -> q.calls() < 100
+                    ? Optional.of("N_PLUS_ONE claimed but calls=" + q.calls() + " (<100)")
+                    : Optional.empty();
+            case IMPLICIT_CAST -> (!planLower.contains("::") && !planLower.contains("cast("))
+                    ? Optional.of("IMPLICIT_CAST claimed but no cast appears in the plan")
+                    : Optional.empty();
+            case DEEP_OFFSET -> !text.contains("offset")
+                    ? Optional.of("DEEP_OFFSET claimed but no OFFSET in the query text")
+                    : Optional.empty();
+            case UNBOUNDED_RESULT -> rowsPerCall < 100
+                    ? Optional.of("UNBOUNDED_RESULT claimed but rows/call=" + fmt(rowsPerCall) + " (<100)")
+                    : Optional.empty();
+            case LEADING_WILDCARD -> !text.contains("like")
+                    ? Optional.of("LEADING_WILDCARD claimed but no LIKE in the query text")
+                    : Optional.empty();
+            case MISSING_INDEX -> (planLower.contains("index scan") && !planLower.contains("seq scan"))
+                    ? Optional.of("MISSING_INDEX claimed but the plan already uses an Index Scan")
+                    : Optional.empty();
+            default -> Optional.empty();
+        };
     }
 
     // Formats the LLM-facing table facts. MCVs are real cell values (emails, names…) and
@@ -423,6 +489,7 @@ public class AgentLoop {
     private record Hypothesis(
             Classification classification,
             Pathology pathology,
+            Confidence confidence,
             String evidence,
             String rootCause,
             String proposedFix,

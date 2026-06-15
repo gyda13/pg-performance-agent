@@ -12,5 +12,6 @@ public record Finding(
         HypoResult hypoTest,
         Double beforeMs,
         Double afterMs,
-        Double delta
+        Double delta,
+        Confidence confidence
 ) {}

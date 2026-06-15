@@ -41,7 +41,8 @@ PERCEIVE → resolve params → DIAGNOSE → CLASSIFY → TEST (Phase 2) → EVA
 | **Resolve params** | `ParamResolver` | Replaces `$N` placeholders with real values sampled from the planner's statistics so the query becomes runnable. `LIMIT`/`OFFSET` params come from config (`bench-limit`, `bench-offset`) | `pg_stats` (MCVs, histograms), `information_schema` |
 | **DIAGNOSE (plan)** | `ExplainTool` | Gets the real execution plan. Runnable SELECT → `EXPLAIN (ANALYZE, BUFFERS)` with runtime stats. Unresolvable params → `EXPLAIN (GENERIC_PLAN)`, structure only. Runs inside a rolled-back transaction | `EXPLAIN` family |
 | **DIAGNOSE (facts)** | `TableInspectionTool` | Table size, estimated rows, every index definition, per-column stats, last ANALYZE time | `pg_class`, `pg_indexes`, `pg_stats`, `pg_stat_user_tables` |
-| **CLASSIFY + HYPOTHESIZE** | `AnthropicLlmClient` + `Prompts` | The only LLM call per query: reads all evidence above, returns JSON — classification (`DB_PROBLEM` / `APP_PROBLEM` / `MIXED`), named pathology, root cause, exactly one proposed fix, tradeoffs | — (LLM reasons, never measures) |
+| **CLASSIFY + HYPOTHESIZE** | `AnthropicLlmClient` + `Prompts` | The only LLM call per query: reads all evidence above *plus the other frequent queries in the window* (for N+1 parent/child correlation), returns JSON — classification, pathology, **confidence** (HIGH/MEDIUM/LOW), root cause, one proposed fix, tradeoffs | — (LLM reasons, never measures) |
+| **CROSS-CHECK** | `AgentLoop` | Deterministically verifies the LLM's claimed signal exists in the data (cast in the plan for IMPLICIT_CAST, high rows/call for UNBOUNDED_RESULT, calls ≥ 100 for N+1…). On mismatch, downgrades the finding to LOW confidence and annotates it — never reclassifies | — |
 | **TEST** (Phase 2) | `HypoPGTool` | Creates the proposed index *virtually* (no disk, no lock, session-scoped), re-plans the query, compares estimated cost before/after | `hypopg` extension |
 | **EVALUATE** | `AgentLoop` | If the estimated speedup is below `min-estimated-speedup`, sends the failed result back to the LLM: propose a *different* fix or concede with `{"discard": true}`. Capped at `max-retries-per-query`. This feedback edge is what makes the system an agent rather than a pipeline | — |
 | **VERIFY** (Phase 3, opt-in) | `BenchmarkTool` + `ApplyTool` | Times the query N runs (warm-up first), really creates the index, times again → measured before/after delta. Only runs when `apply-fixes=true` AND params were resolved | `EXPLAIN ANALYZE` timing, DDL |
@@ -159,7 +160,6 @@ for the full what-goes/what-it-buys breakdown.
 | 1 | Perceive → diagnose → classify → report. APP_PROBLEM detection is fully functional here | No |
 | 2 | HypoPG estimated before/after for DB fixes | No (hypothetical indexes are in-memory) |
 | 3 | Real benchmark + opt-in apply path | Yes — `CREATE INDEX` only, double opt-in |
-| 4 (optional) | `CodeInspectionTool`: grep the app repo to *confirm* a suspected pathology (e.g. find the `FetchType.LAZY` behind an N+1). Confirmatory only | No |
 
 ## 8. Running it
 

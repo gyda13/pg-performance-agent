@@ -6,34 +6,24 @@ root cause lives in the **database** or in the **application/ORM layer**, propos
 right layer, and (once fully built) proves database-side fixes work by measuring before/after on
 the real database. It loops query-by-query until there's nothing left worth optimizing.
 
-It's an *agent*, not a chat wrapper: the value isn't the advice (any chat gives generic tuning
-tips), it's that this **connects to your real data**, **runs the real plans**, and **measures the
-real results** — three things a chat window fundamentally can't do.
+## What it does
 
-## What makes this different
+A lot of slow Postgres — especially under Spring Boot / Hibernate — isn't a missing index. It's
+the application using the database inefficiently: N+1 query storms, deep `OFFSET` pagination,
+implicit type casts that silently disable indexes, unbounded result sets. These leave recognizable
+fingerprints in `pg_stat_statements` and in execution plans, so the agent can diagnose them from
+**the database's telemetry alone**, without access to the application code.
 
-Index advisors already exist (Dexter, pganalyze Index Advisor, HypoPG tooling). They all answer
-one question: *"would an index help this query?"* But a large share of real-world slow Postgres —
-especially under Spring Boot / Hibernate workloads — isn't a missing index at all. It's the
-application misusing the database: N+1 query storms, deep `OFFSET` pagination, implicit type casts
-that silently disable indexes, unbounded result sets.
-
-This agent's core differentiator is that it **diagnoses application behavior using only the
-database's own telemetry**. It never needs access to the application code or the ORM. ORM
-pathologies leave unmistakable fingerprints in `pg_stat_statements` and in execution plans — the
-agent reads those fingerprints from the symptom side, and the LLM names the likely cause on the
-application side.
-
-Every finding is therefore classified before any fix is proposed:
+Every finding is classified before any fix is proposed:
 
 | Classification | Meaning | Fix layer | Verifiable by the agent? |
 |---|---|---|---|
 | `DB_PROBLEM` | The query is reasonable; the database is under-equipped (missing/wrong index, stale stats, bad plan) | DDL / config | Yes — HypoPG + benchmark |
-| `APP_PROBLEM` | The database is doing exactly what it was asked; the application is asking badly (ORM misuse) | Java / JPA code | No — reported with evidence, honestly marked unverifiable |
+| `APP_PROBLEM` | The database is doing exactly what it was asked; the application is asking badly (ORM misuse) | Java / JPA code | No — reported with evidence, marked unverifiable |
 | `MIXED` | Both (e.g. an N+1 that's also missing an FK index) | Both | Partially |
 
-An agent that sometimes says *"don't add an index — fix your repository method"* is more useful,
-and more credible, than one that always proposes DDL.
+So when the right answer is a code change, the agent says so and points at it, instead of
+proposing an index that wouldn't help.
 
 ## The one principle
 
@@ -124,6 +114,24 @@ The classifier gets one extra hint: Hibernate-generated SQL has a recognizable s
 aliases (`o1_0`, `oi1_0`), every column enumerated, characteristic join nesting. The LLM uses this
 to justify reasoning about application-layer causes. It's a signal, not proof, and findings say so.
 
+### Reliability: correlation, confidence, and a cross-check
+
+Three things keep the application-layer classification trustworthy rather than a one-shot guess:
+
+- **Parent/child correlation.** The perceive step hands the classifier the other frequent queries
+  in the window, so an N+1 is confirmed by finding the *parent* query that drives it (a child
+  lookup whose `calls` ≈ parent calls × rows-per-parent), not by a single query's stats in
+  isolation. With a matching parent the finding is HIGH confidence; without one it's only "probably
+  N+1" and marked lower.
+- **A confidence level on every finding** (`HIGH` / `MEDIUM` / `LOW`). HIGH when multiple
+  independent signals agree; LOW when the call rests on a *sampled* parameter value rather than the
+  real one — which is the honest state for `LEADING_WILDCARD` and `IMPLICIT_CAST`, since
+  `pg_stat_statements` normalizes the literal away.
+- **A deterministic cross-check.** After the LLM classifies, plain Java verifies the claimed signal
+  actually exists in the data (e.g. an `IMPLICIT_CAST` finding really has a cast in the plan; an
+  `UNBOUNDED_RESULT` really has a high rows/call). If it doesn't, the finding is downgraded to LOW
+  and annotated — catching the occasional LLM overreach without overriding its judgment.
+
 ### Honesty rule for APP_PROBLEM findings
 
 Application-layer fixes cannot be benchmarked by this agent (the fix lives in code it cannot run).
@@ -138,7 +146,7 @@ calls/day of measured 0.3 ms each"), clearly labeled as derived from measurement
 This tool connects to a database and runs queries against it.
 
 - **Point it at a replica or a restored clone, never primary production.**
-- It runs **read-only by default** (see `application.yml`). Keep it that way until Phase 4.
+- It runs **read-only by default** (see `application.yml`). Keep it that way until Phase 3.
 - **`EXPLAIN ANALYZE` actually executes the query.** Safe on `SELECT`s; on writes it performs the
   write. The `ExplainTool` stub documents how to guard this (force `ROLLBACK`, or refuse
   non-SELECTs).
@@ -260,7 +268,8 @@ Five problems are planted at startup, one per pathology class:
 | **Unbounded result set** | No `LIMIT` in query, `rows_per_call=120k`, `calls=10`, `total=916ms` — joins `order_items × orders` on a 4-value `status` column | Application fetches entire unfiltered join result into memory on every call | App: add keyset pagination `WHERE oi.id > $last_seen_id LIMIT 1000`; for batch jobs use a server-side cursor | No — app-side fix |
 | **Leading wildcard search** | `LIKE '%@example.com'` in query text — Seq Scan despite btree index on `email`, `rows_per_call=100k` (entire table) | Leading `%` prevents btree index use; no result cap means the full table is returned on every call | App: add `LIMIT` and enforce a minimum non-wildcard prefix; for substring search switch to `pg_trgm` GIN index | No — app-side fix |
 
-4 of 5 problems are application-layer misuse. A traditional index advisor would have proposed 5 indexes and fixed exactly 1.
+4 of the 5 planted problems are application-layer misuse — only one is actually fixed with an index.
+The classification step is what tells those apart.
 
 ## Sample output
 
@@ -292,12 +301,15 @@ Five problems are planted at startup, one per pathology class:
 
 ## How the loop works
 
+This is the part that makes it an agent rather than a single prompt: it acts on a real
+environment, observes the result of each action, and revises based on what it sees.
+
 ```
-PERCEIVE     read query stats from pg_stat_statements          [implemented: SlowQueryTool]
+PERCEIVE     read query stats from pg_stat_statements          [SlowQueryTool]
              ranked by total_exec_time AND calls — not just mean time,
              so N+1 storms (fast queries called 500k times) are caught
-DIAGNOSE     EXPLAIN (ANALYZE, BUFFERS) the worst candidate     [stub: ExplainTool]
-             + table size, indexes, column stats                [stub: TableInspectionTool]
+DIAGNOSE     EXPLAIN (ANALYZE, BUFFERS) the worst candidate     [ExplainTool]
+             + table size, indexes, column stats                [TableInspectionTool]
 CLASSIFY     LLM reads stats + plan + facts ->
              DB_PROBLEM | APP_PROBLEM | MIXED                   [LlmClient]
 HYPOTHESIZE  DB_PROBLEM  -> one concrete DDL/config fix
@@ -305,16 +317,19 @@ HYPOTHESIZE  DB_PROBLEM  -> one concrete DDL/config fix
                             evidence chain attached, marked unverifiable
 TEST         (Phase 2) DB fixes only: HypoPG hypothetical index, re-EXPLAIN,
              compare estimated cost
+EVALUATE     if the estimate is too weak, feed it back to the LLM for a
+             revised hypothesis, or discard — up to a retry limit
 VERIFY       (Phase 3) DB fixes only: apply for real, benchmark,
-             capture measured before/after delta
-EVALUATE     keep / discard / try another hypothesis
+             capture measured before/after delta; drop the index if it regressed
 LOOP         next query, until a termination condition
 ```
 
-**Why perceive ranks by `total_exec_time` and `calls`:** ranking only by mean execution time is
-how every naive tool works, and it is structurally blind to N+1 patterns — the single most common
-ORM pathology. A 0.3 ms query called 500,000 times costs more than a 2-second query called 60
-times. The perceive step surfaces both.
+The feedback edges — TEST → EVALUATE → revised HYPOTHESIZE, and VERIFY → drop-on-regression —
+are what separate this from a one-shot answer: a failed hypothesis changes what the agent does next.
+
+**Why perceive ranks by `total_exec_time` and `calls`:** ranking by mean execution time alone is
+structurally blind to N+1 patterns — a 0.3 ms query called 500,000 times costs more than a
+2-second query called 60 times. The perceive step surfaces both.
 
 **Termination** (the agent always stops): nothing left above the cost threshold, OR
 max-iterations reached, OR only marginal gains in recent iterations. It logs *why* it stopped.
@@ -372,20 +387,23 @@ The end-of-run report groups findings by classification, so the output reads as:
 *"here's what to fix in the database, and here's what to fix in your code — with the evidence
 for both."*
 
-## Build phasing
+## Phases
 
-Build in order — each phase is useful on its own:
+The agent works in phases. Phase 1 always runs; the rest are optional and turned on by config.
 
-1. **Phase 1 (read-only diagnosis + classification):** perceive → EXPLAIN → classify →
-   diagnose → report. Completely safe, and the APP_PROBLEM detection already works fully here —
-   it needs no write access at all.
-2. **Phase 2:** HypoPG hypothetical-index testing with estimated before/after for DB_PROBLEM
-   findings (needs a Postgres image with HypoPG — see `db/init/01-init.sql`).
-3. **Phase 3:** real benchmarking and a guarded, opt-in "apply the change" path for DB fixes.
-4. **Phase 4 (optional):** point the agent at a repo path; a `CodeInspectionTool` greps entity
-   and repository classes to *confirm* a suspected pathology (e.g. find the `FetchType.LAZY`
-   collection behind a detected N+1). Strictly confirmatory — the DB-only diagnosis must stand
-   on its own without it.
+1. **Phase 1 — diagnosis + classification (always on):** perceive → EXPLAIN → classify →
+   diagnose → report. Read-only and safe; APP_PROBLEM detection works fully here with no write
+   access.
+2. **Phase 2 — estimated before/after (optional):** HypoPG hypothetical-index testing for
+   DB_PROBLEM findings. Active when the database has the HypoPG extension; still read-only.
+3. **Phase 3 — apply and measure (optional, opt-in):** real benchmarking and a guarded "apply
+   the change" path for DB fixes. Off by default — requires setting `pgagent.loop.apply-fixes`
+   and `spring.datasource.hikari.read-only: false`. Point it at a clone, not production.
+
+For application-layer findings, the agent stops at a precise, evidence-backed recommendation
+(named pathology + code-level fix + the numbers). Applying that change in your codebase is left
+to you — your own editor or coding assistant — so the agent never needs access to your source.
+
 ## Project layout
 
 ```
@@ -416,18 +434,21 @@ db/RUNBOOK.md                     reset instructions, pathology table, verify qu
 docker-compose.yml                demo Postgres with pg_stat_statements enabled
 ```
 
-## Prior art, and where this sits
+## Similar tools
 
-- **Dexter / pganalyze Index Advisor** — automatic index recommendation via hypothetical indexes.
-  This project uses the same HypoPG technique for its DB-side verification, but index advice is
-  one branch of its output, not the whole product.
-- **DBtune and similar config tuners** — optimize server parameters (`shared_buffers`, etc.),
-  not individual queries, and not application behavior.
-- **Generic "AI DBA" chat tools** — give advice without connecting to real plans or measuring
-  anything; the exact gap the one-principle rule here exists to close.
-  None of the above classifies whether the root cause is the database or the application, and none
-  diagnoses ORM misuse from database telemetry alone. That classification step is this project's
-  contribution.
+For context, here are related tools and how this project overlaps or differs:
+
+| Tool | What it does | Relationship to this project |
+|---|---|---|
+| **Dexter / pganalyze Index Advisor** | Suggest indexes via hypothetical (HypoPG) indexes | Same HypoPG technique for the DB-side check; here it's one step in the loop, not the whole tool |
+| **pganalyze / pgMustard** | Continuous monitoring and plan visualization | Strong at watching a database over time; they don't classify DB-vs-app or apply-and-measure fixes |
+| **DBtune / OtterTune** | Tune server parameters (`shared_buffers`, etc.) | Different layer — server config, not individual queries or app behavior |
+| **Hypersistence Optimizer, Digma, APM N+1 detectors** | Catch ORM misuse from inside the running app | Same pathologies, opposite direction — they instrument the application; this reads the database telemetry |
+| **Generic "AI DBA" chat tools** | Give tuning advice from a prompt | Don't connect to real plans or measure anything |
+
+Where this project sits: it classifies whether the root cause is the database or the application,
+diagnoses ORM misuse from database telemetry alone, and verifies database-side fixes by measuring
+them. That combination is its focus.
 
 ## License
 

@@ -97,10 +97,7 @@ src/main/java/dev/gyda/pgagent/
 ├── tools/
 │   ├── SlowQueryTool.java        WORKING reference — copy its pattern for other tools
 │   ├── ExplainTool.java          stub
-│   ├── TableInspectionTool.java  stub
-│   └── CodeInspectionTool.java   Phase 4, optional — repo grep to CONFIRM a suspected
-│                                 pathology (e.g. find the FetchType.LAZY behind an N+1);
-│                                 confirmatory only, DB-only diagnosis must stand alone
+│   └── TableInspectionTool.java  stub
 ├── llm/                          LlmClient interface + AnthropicLlmClient
 ├── model/                        SlowQuery, Finding, Classification, Pathology
 └── config/AgentProperties.java
@@ -117,7 +114,6 @@ docker-compose.yml                demo Postgres (image must include pg_stat_stat
    fully functional in this phase (it needs no writes). Finish and demo this before Phase 2.
 2. **Phase 2:** HypoPG estimated before/after for DB_PROBLEM findings.
 3. **Phase 3:** real benchmark + guarded opt-in apply path.
-4. **Phase 4 (optional):** CodeInspectionTool.
 ## Common commands
 
 ```bash

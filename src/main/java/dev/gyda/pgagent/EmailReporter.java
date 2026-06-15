@@ -3,6 +3,7 @@ package dev.gyda.pgagent;
 import dev.gyda.pgagent.config.AgentProperties;
 import dev.gyda.pgagent.model.AgentRunResult;
 import dev.gyda.pgagent.model.Classification;
+import dev.gyda.pgagent.model.Confidence;
 import dev.gyda.pgagent.model.Finding;
 import dev.gyda.pgagent.model.QueryTrend;
 import jakarta.mail.internet.MimeMessage;
@@ -164,7 +165,7 @@ public class EmailReporter {
           .append("<table cellpadding=\"6\" cellspacing=\"0\" style=\"width:100%;border-collapse:collapse;")
           .append("background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;font-size:12px;margin-bottom:24px;\">")
           .append("<tr style=\"background:#f9fafb;color:#374151;text-align:left;\">")
-          .append("<th style=\"padding:8px;\">#</th><th>Pathology</th><th>Layer</th><th>Trend</th><th>Query</th>")
+          .append("<th style=\"padding:8px;\">#</th><th>Pathology</th><th>Layer</th><th>Confidence</th><th>Trend</th><th>Query</th>")
           .append("<th style=\"text-align:right;\">Calls</th><th style=\"text-align:right;\">Mean&nbsp;ms</th>")
           .append("<th style=\"text-align:right;\">Total&nbsp;ms</th><th>Status</th></tr>");
 
@@ -175,6 +176,7 @@ public class EmailReporter {
               .append("<td style=\"padding:8px;color:#9ca3af;\">").append(i).append("</td>")
               .append("<td>").append(badge(f.pathology().name(), "#374151", "#e5e7eb")).append("</td>")
               .append("<td>").append(classificationBadge(f.classification())).append("</td>")
+              .append("<td>").append(confidenceBadge(f.confidence())).append("</td>")
               .append("<td>").append(trendBadge(trends.get(f.query().queryText()))).append("</td>")
               .append("<td style=\"font-family:ui-monospace,Menlo,Consolas,monospace;color:#4b5563;\">")
               .append(escape(abbreviate(f.query().queryText(), 60))).append("</td>")
@@ -202,7 +204,8 @@ public class EmailReporter {
 
             // Title row: pathology + trend + per-query metrics
             sb.append("<div style=\"margin-bottom:8px;\">")
-              .append(badge(f.pathology().name(), "#ffffff", color));
+              .append(badge(f.pathology().name(), "#ffffff", color))
+              .append(" ").append(confidenceBadge(f.confidence()));
             String trend = trendBadge(trends.get(f.query().queryText()));
             if (!trend.isEmpty()) {
                 sb.append(" ").append(trend);
@@ -256,6 +259,15 @@ public class EmailReporter {
         return switch (trend) {
             case NEW       -> badge("NEW", "#ffffff", "#15803d");
             case RECURRING -> badge("RECURRING", "#ffffff", "#6b7280");
+        };
+    }
+
+    private static String confidenceBadge(Confidence c) {
+        if (c == null) return "";
+        return switch (c) {
+            case HIGH   -> badge("HIGH", "#ffffff", "#15803d");
+            case MEDIUM -> badge("MEDIUM", "#ffffff", "#b45309");
+            case LOW    -> badge("LOW", "#ffffff", "#9ca3af");
         };
     }
 
@@ -339,6 +351,7 @@ public class EmailReporter {
             i++;
             QueryTrend trend = trends.get(f.query().queryText());
             sb.append("\n[").append(i).append("] ").append(f.pathology())
+              .append(f.confidence() != null ? " (" + f.confidence() + " confidence)" : "")
               .append(trend != null ? " [" + trend + "]" : "")
               .append(" — ").append(abbreviate(f.query().queryText(), 80)).append("\n")
               .append("    calls=").append(f.query().calls())

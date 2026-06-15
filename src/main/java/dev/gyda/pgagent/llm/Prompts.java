@@ -17,6 +17,12 @@ public final class Prompts {
               N_PLUS_ONE      — calls >= 100 AND rows_per_call <= 1 AND mean_exec_time < 5ms.
                                 This is the N+1 pattern: the application issues one query per entity
                                 in a loop. classify as APP_PROBLEM regardless of how fast each call is.
+                                Strong confirmation: a query in OTHER FREQUENT QUERIES selects from a
+                                related/parent table with a calls count roughly equal to this query's
+                                calls divided by its rows-per-parent (i.e. this lookup runs once per
+                                row the parent returned). If you find that parent, cite it in evidence
+                                and set confidence HIGH. Without a matching parent, a frequently-called
+                                single-row lookup is only probably an N+1 — use MEDIUM.
               IMPLICIT_CAST   — plan filter casts an indexed column, forcing a Seq Scan
               DEEP_OFFSET     — LIMIT/OFFSET where rows processed >> rows returned
               UNBOUNDED_RESULT — no LIMIT clause AND high rows/call ratio (rows_per_call > 100)
@@ -47,10 +53,21 @@ public final class Prompts {
             proposed_fix="No change needed".
               - For APP_PROBLEM findings you MUST NOT suggest a database index as the fix.
 
+            Confidence — how well the evidence supports the classification:
+              HIGH   — multiple independent signals agree (e.g. stats + plan + a matching parent
+                       query for N+1; or plan filter + the index list for IMPLICIT_CAST).
+              MEDIUM — the classification rests mainly on the pg_stat_statements numbers alone.
+              LOW    — it depends on a sampled parameter value rather than the real one. Use LOW for
+                       LEADING_WILDCARD and IMPLICIT_CAST: pg_stat_statements normalizes the literal
+                       away, so whether the value was a leading wildcard or a cast cannot be confirmed
+                       from the normalized query — the plan was run with a value sampled from pg_stats,
+                       which may differ from production.
+
             Respond with a single JSON object only — no markdown, no code fences, no prose:
             {
               "classification": "DB_PROBLEM",
               "pathology": "MISSING_INDEX",
+              "confidence": "HIGH",
               "evidence": "<key numbers and plan fragments that support the classification>",
               "root_cause": "<one-paragraph explanation>",
               "proposed_fix": "<SQL DDL statement or code recommendation>",
