@@ -1,0 +1,67 @@
+spring:
+  application:
+    name: pg-performance-agent
+  main:
+    web-application-type: none
+    banner-mode: "off"
+  mail:
+    host: smtp.gmail.com
+    port: 587
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+
+  datasource:
+    url: ${PGAGENT_DB_URL:jdbc:postgresql://localhost:5432/pgagent_demo}
+    username: ${PGAGENT_DB_USER:pgagent}
+    password: ${PGAGENT_DB_PASSWORD:pgagent}
+    hikari:
+      # Safe default: the agent only reads. Phase 3 requires flipping this AND apply-fixes.
+      read-only: true
+      maximum-pool-size: 3
+      connection-init-sql: "SET statement_timeout = '5000ms'"
+
+pgagent:
+  anthropic:
+    api-key: ${ANTHROPIC_API_KEY:}
+    model: claude-sonnet-4-6
+    max-tokens: 2048
+  loop:
+    max-iterations: 10
+    slow-query-limit: 10
+    statement-timeout-ms: 5000
+    min-mean-time-ms: 50.0
+    min-total-time-ms: 500.0
+    # Safety: Phase 3 (apply DDL + benchmark) is explicit opt-in. Never default to true.
+    apply-fixes: false
+    benchmark-runs: 5
+    # Literals substituted for LIMIT/OFFSET $N params when re-running queries.
+    bench-limit: 50
+    bench-offset: 100000
+    # EVALUATE: a hypothesis must clear these bars or it is revised/discarded.
+    min-estimated-speedup: 1.5
+    min-measured-speedup: 1.1
+    max-retries-per-query: 2
+  report:
+    recipient-email: ${REPORT_RECIPIENT_EMAIL:}
+  privacy:
+    # Opt-in: send real data values (pg_stats most-common values, sampled literals in plans)
+    # to the Anthropic API as classification evidence. Improves data-skew reasoning and
+    # enables value-specific partial-index suggestions. Leave false for sensitive databases.
+    share-data-values: false
+  snapshot:
+    # Time-windowed analysis (recommended for recurring/production runs): each run saves
+    # the pg_stat_statements counters to `path`; the next run analyzes only what happened
+    # since — "since last run" instead of "since stats reset". Local JSON file, nothing is
+    # written to the database.
+    enabled: false
+    path: pgagent-snapshot.json
+
+logging:
+  level:
+    root: WARN
+    dev.gyda.pgagent: INFO
+  pattern:
+    console: "%d{HH:mm:ss} %-5level %logger{0} - %msg%n"

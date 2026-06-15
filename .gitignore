@@ -1,0 +1,26 @@
+# --- Secrets: never commit these ---
+.env
+
+# --- Maven ---
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+# --- Java ---
+*.class
+*.log
+hs_err_pid*
+
+# --- IDEs ---
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# --- Runtime artifacts ---
+# Time-window snapshot: holds normalized query shapes, regenerated every run.
+pgagent-snapshot.json
+
+# --- OS ---
+.DS_Store

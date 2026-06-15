@@ -1,0 +1,8 @@
+# The demo image (Dockerfile) only adds the hypopg apt package — it copies no project
+# files — so keep the build context tiny instead of shipping the whole repo to the daemon.
+target/
+.git/
+.idea/
+src/
+docs/
+*.md

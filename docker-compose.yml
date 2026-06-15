@@ -1,0 +1,31 @@
+services:
+  db:
+    # postgres:16 + HypoPG (see Dockerfile) — Phase 2 needs the hypopg extension.
+    build: .
+    image: pgagent-demo-db
+    container_name: pgagent-demo-db
+    environment:
+      POSTGRES_DB: pgagent_demo
+      POSTGRES_USER: pgagent
+      POSTGRES_PASSWORD: pgagent
+    ports:
+      - "5432:5432"
+    # pg_stat_statements must be loaded at server start (it can't be enabled by SQL alone).
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
+      - "-c"
+      - "pg_stat_statements.track=all"
+    # Everything in db/init runs once, in filename order, the first time the volume is created.
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - pgagent_demo_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pgagent -d pgagent_demo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgagent_demo_data:
