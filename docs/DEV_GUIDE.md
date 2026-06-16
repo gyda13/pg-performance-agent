@@ -103,6 +103,33 @@ The tools surface raw signals; the LLM does the classification. The detection si
 Supporting signal: Hibernate-generated SQL is recognizable (aliases like `o1_0`, fully
 enumerated columns). It justifies *suspecting* the app layer; it is never treated as proof.
 
+### Reliability — correlation, confidence, and a cross-check
+
+Three things keep the application-layer classification trustworthy rather than a one-shot guess:
+
+- **Parent/child correlation.** The perceive step hands the classifier the other frequent queries
+  in the window, so an N+1 is confirmed by finding the *parent* that drives it (a child lookup
+  whose `calls` ≈ parent calls × rows-per-parent), not by one query's stats in isolation. With a
+  matching parent → HIGH confidence; without one → only "probably N+1", marked lower.
+- **A confidence level on every finding** (`HIGH` / `MEDIUM` / `LOW`). HIGH when independent signals
+  agree; LOW when the call rests on a *sampled* parameter value, which is the honest state for
+  `LEADING_WILDCARD` and `IMPLICIT_CAST` — `pg_stat_statements` normalizes the literal away, so the
+  plan was run with a value sampled from `pg_stats` that may differ from production.
+- **A deterministic cross-check.** After the LLM classifies, plain Java verifies the claimed signal
+  is actually present (a cast in the plan for `IMPLICIT_CAST`, high rows/call for `UNBOUNDED_RESULT`,
+  calls ≥ 100 for `N_PLUS_ONE`…). On a mismatch the finding is downgraded to LOW and annotated —
+  catching the occasional LLM overreach without overriding its judgment.
+
+### Honesty rule for APP_PROBLEM findings
+
+Application-layer fixes can't be benchmarked by this agent (the fix lives in code it can't run), so
+those findings are always `verified = false` with the note "not applicable — fix is
+application-side". The agent never fabricates an expected improvement for them. It may state the
+*arithmetic* implication of measured numbers (e.g. "eliminating the per-row lookup removes ~500k
+calls/day of measured 0.3 ms each"), clearly labelled as derived from measurement, not predicted.
+The only verification it can offer for a code fix is the cross-run "Resolved" signal: the query
+storm disappearing from a later run's report after you ship the change.
+
 ## 5. Configuration reference (`pgagent.*` in `application.yml`)
 
 | Property | Default | Meaning |
