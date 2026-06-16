@@ -22,6 +22,13 @@ spring:
       read-only: true
       maximum-pool-size: 3
       connection-init-sql: "SET statement_timeout = '5000ms'"
+      data-source-properties:
+        # EXPLAIN (GENERIC_PLAN) plans a query with unbound $N placeholders, which only works
+        # over the simple query protocol — the default extended protocol tries to client-bind
+        # the $1 (0 params supplied for 1 required → SQLSTATE 08P01, broken connection).
+        # extendedForPrepared = simple protocol for plain Statements (ExplainTool's GENERIC_PLAN),
+        # extended for PreparedStatements (the parameterized tool queries). Both stay correct.
+        preferQueryMode: extendedForPrepared
 
 pgagent:
   anthropic:
