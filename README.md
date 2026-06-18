@@ -1,17 +1,22 @@
 # Postgres Performance Agent
 
-An agent that connects to a real Postgres database, finds the queries costing you the most, and
-works out **why** from real execution plans and statistics. It classifies each problem as a
-**database** issue or an **application/ORM** issue, proposes a fix at the right layer, and verifies
-database-side fixes by measuring before/after. One principle holds throughout: **the LLM never
-produces a number** — every metric comes from real query execution; the model only reasons over
-that evidence.
+This agent connects to a Postgres database, finds the queries that cost the most time, and figures
+out why by reading real execution plans and statistics. For each problem it decides whether the fix
+belongs in the database or in the application, suggests that fix, and for database fixes measures
+the before/after so you can see it actually helped.
 
-A lot of slow Postgres — especially under Spring Boot / Hibernate — isn't a missing index. It's the
-application using the database badly: N+1 query storms, deep `OFFSET` pagination, implicit type
-casts that disable indexes, unbounded result sets. These leave recognizable fingerprints in
-`pg_stat_statements` and in execution plans, so the agent diagnoses them from the database's
-telemetry alone — without access to your code.
+The rule it never breaks: the LLM never produces a number. Every metric comes from running the
+query or reading Postgres statistics; the model only reasons over that evidence.
+
+A lot of slow Postgres isn't a missing index, it's the application using the database badly: N+1
+query storms, deep `OFFSET` pagination, implicit type casts that disable indexes, unbounded result
+sets. ORM-heavy stacks run into these the most, but they show up anywhere. They leave recognizable
+fingerprints in `pg_stat_statements` and in execution plans, which is how the agent spots them from
+telemetry alone.
+
+The agent itself is built in Java with Spring Boot, chosen for its solid data-access layer (plain
+JDBC, Hikari connection pooling, typed configuration). That's just how the tool is built; it has
+nothing to do with the stack behind the database you point it at.
 
 | Classification | Meaning | Fix layer | Verified by the agent? |
 |---|---|---|---|
@@ -112,12 +117,12 @@ unattended. (Phase 3 itself still requires `pgagent.loop.apply-fixes: true`.)
 
 ## Using it
 
-**Why:** it surfaces the queries actually costing you the most — ranked by total time, so it catches
-N+1 storms that per-request dashboards miss — tells you whether to fix the database or the code, and
-proves database fixes with real measurements. It's especially useful for Spring Boot / Hibernate
-teams without a dedicated DBA.
+It surfaces the queries that actually cost you the most by ranking on total time, so it catches the
+N+1 storms that per-request dashboards miss. It tells you whether to fix the database or the code,
+and backs database fixes with real before/after numbers. Teams running an ORM without a dedicated
+DBA tend to get the most out of it, but it's useful on any Postgres database.
 
-**How** (needs Java 21, Maven 3.9+, Docker):
+To run it (needs Java 21, Maven 3.9+, Docker):
 
 ```bash
 docker compose up -d --build      # demo Postgres with pg_stat_statements + HypoPG
