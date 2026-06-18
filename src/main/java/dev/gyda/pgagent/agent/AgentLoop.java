@@ -3,6 +3,7 @@ package dev.gyda.pgagent.agent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.gyda.pgagent.config.AgentProperties;
+import dev.gyda.pgagent.interaction.ApplyApproval;
 import dev.gyda.pgagent.llm.LlmClient;
 import dev.gyda.pgagent.llm.Prompts;
 import dev.gyda.pgagent.model.AgentRunResult;
@@ -34,7 +35,7 @@ import java.util.Map;
 import java.util.Optional;
 
 @Component
-public class AgentLoop {
+public class AgentLoop implements PerformanceAgent {
 
     private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
 
@@ -48,6 +49,7 @@ public class AgentLoop {
     private final LlmClient llm;
     private final ObjectMapper mapper;
     private final AgentProperties props;
+    private final ApplyApproval approval;
 
     public AgentLoop(SlowQueryTool slowQueryTool,
                      ExplainTool explainTool,
@@ -58,7 +60,8 @@ public class AgentLoop {
                      ApplyTool applyTool,
                      LlmClient llm,
                      ObjectMapper mapper,
-                     AgentProperties props) {
+                     AgentProperties props,
+                     ApplyApproval approval) {
         this.slowQueryTool = slowQueryTool;
         this.explainTool = explainTool;
         this.tableInspectionTool = tableInspectionTool;
@@ -69,8 +72,10 @@ public class AgentLoop {
         this.llm = llm;
         this.mapper = mapper;
         this.props = props;
+        this.approval = approval;
     }
 
+    @Override
     public AgentRunResult run() {
         List<Finding> findings = new ArrayList<>();
 
@@ -236,7 +241,10 @@ public class AgentLoop {
             if (hypothesis.classification() != Classification.APP_PROBLEM
                     && createIndex.isPresent() && props.getLoop().isApplyFixes() && paramsResolved) {
                 int runs = props.getLoop().getBenchmarkRuns();
-                try {
+                Double est = hypoResult != null ? hypoResult.estimatedSpeedup() : null;
+                if (!approval.approve("index", createIndex.get(), est)) {
+                    log.info("  Phase 3 skipped — apply not approved; finding stays unverified.");
+                } else try {
                     BenchmarkResult before = benchmarkTool.benchmark(runnableSql, runs);
                     beforeMs = before.meanMs();
                     log.info("  Phase 3 before: mean={} ms  min={} ms  max={} ms",

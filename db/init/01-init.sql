@@ -64,6 +64,27 @@ FROM generate_series(1, 2000000) AS g;
 -- Index the primary keys only (BIGSERIAL gives those for free). customer_id is intentionally
 -- left unindexed so the agent can discover the missing-FK-index problem on the join/filter.
 
+-- --- Planted problem: STALE_STATS -------------------------------------------
+-- `events` is seeded with 500k rows but DELIBERATELY never ANALYZEd, and autovacuum is
+-- disabled so nothing fixes it behind our back. The planner therefore thinks the table is
+-- tiny (reltuples ≈ 0) and badly under-estimates row counts — a join against it picks a poor
+-- plan. The correct fix is `ANALYZE events` (not an index), which the agent's
+-- analyze_table_and_recheck tool can apply and verify by re-EXPLAINing.
+CREATE TABLE events (
+    id           BIGSERIAL PRIMARY KEY,
+    customer_id  BIGINT NOT NULL,
+    type         TEXT NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE events SET (autovacuum_enabled = false);
+INSERT INTO events (customer_id, type)
+SELECT (1 + floor(random() * 100000))::bigint,
+       CASE WHEN random() < 0.70 THEN 'view'
+            WHEN random() < 0.5  THEN 'click'
+            ELSE 'purchase' END
+FROM generate_series(1, 500000) AS g;
+-- NOTE: no ANALYZE events here — that is the planted problem.
+
 -- Build planner statistics so estimates are sane for the indexed columns.
 ANALYZE customers;
 -- TODO (planted problem: stale stats): leave `orders` UN-analyzed for one scenario, so the

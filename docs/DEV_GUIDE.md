@@ -74,6 +74,56 @@ value. For example, `email LIKE $1` will be re-run with a plain email, not the
 `pg_stat_statements` numbers in that case, and the prompt tells the LLM exactly that.
 Recovering true runtime parameters would require `auto_explain` log sampling (future work).
 
+## 2b. Two loops: deterministic pipeline vs. autonomous (LLM-driven)
+
+`AgentRunner` selects the loop from `pgagent.loop.autonomous`; both implement
+`agent/PerformanceAgent` (`AgentRunResult run()`):
+
+- **`AgentLoop`** (default) — the fixed sequence in the table above. Java owns the control flow; the
+  LLM is called once per query to classify + propose a fix (plus a revise call if HypoPG vetoes it).
+- **`AutonomousAgentLoop`** — Java still runs *perceive* (`SlowQueryTool`, the entry point and the
+  empty-candidates stop-gate), then hands the candidates to the model and lets it drive: it chooses
+  which tools to call and when to stop, ending with `submit_findings`. The conversation is a tool-use
+  loop (`LlmClient.converse` → `AnthropicLlmClient`), bounded by `loop.max-tool-calls`.
+
+The non-negotiable rules hold in **both**: the LLM never produces a number (measured values come from
+the tools and are attached to findings by Java in `buildFindings`), and the only writing tool stays
+gated. The deterministic loop is the default because most runs are routine — it is cheaper, faster,
+fully reproducible, and unit-testable with a canned `LlmClient`. Autonomy is opt-in for open-ended
+investigation (e.g. correlating across queries, or a pathology you did not pre-script).
+
+### Tools the LLM can call (autonomous mode)
+
+Each LLM-facing tool is just a thin wrapper over a deterministic Java tool — the model decides
+*when* to call them; the tools do the work. Catalog and dispatch live in `AutonomousAgentLoop`
+(`catalog()` builds the `ToolSpec` list; `dispatch()` maps a `ToolCall` to a method).
+
+| Tool (LLM-facing) | Backed by | Effect |
+|---|---|---|
+| `explain_query(query)` | `ExplainTool.explain` | read — real plan (ANALYZE or GENERIC_PLAN) |
+| `inspect_table(table)` | `TableInspectionTool.inspect` | read — size, indexes, column stats |
+| `column_distribution(table, column)` | `TableInspectionTool.columnDistribution` | read — selectivity (is an index worthwhile?) |
+| `find_related_queries(pattern)` | `RelatedQueryTool` | read — other `pg_stat_statements` rows (find an N+1 parent) |
+| `test_hypothetical_index(query, sql)` | `HypoPGTool.test` | read — virtual index, cost before/after |
+| `test_index_set(query, sqls[])` | `HypoPGTool.testSet` | read — several virtual indexes at once (joins) |
+| `explain_with_value(query, n, value)` | `ExplainTool.explain` (literal substituted for `$n`) | read — confirm a wildcard/cast with the real value |
+| `benchmark_and_apply_index(query, sql)` | `BenchmarkTool` + `ApplyTool.apply` | **write** — measured before/after; approval-gated |
+| `analyze_table_and_recheck(table, query)` | `ApplyTool.analyze` + `ExplainTool` | **write** — the STALE_STATS fix; approval-gated |
+| `submit_findings(findings)` | terminal | ends the run; Java builds `Finding`s, attaching measured numbers |
+
+To add a tool: back it with a Java method, register a `ToolSpec` in `catalog()`, and handle its name
+in `dispatch()`. The model can only call what is registered — it cannot invent tools or run arbitrary
+SQL (there is deliberately no `run_sql` tool).
+
+### Approval for database writes (both loops)
+
+Every Phase-3 write goes through `interaction/ApplyApproval`: the exact statement
+(`CREATE INDEX` / `DROP INDEX` / `ANALYZE`) is printed verbatim with its HypoPG *estimated* speedup as
+a preview, and runs only after the user types `y`. Read-only tools never prompt. With no console the
+answer defaults to "no" — the safe choice is to leave the database unchanged. This gate is
+unconditional and separate from `apply-fixes` (which still controls whether Phase 3 runs at all):
+`apply-fixes` is the *capability*, approval is the *per-statement consent*.
+
 ## 3. The Postgres features — what they are and what they give you
 
 | Feature | What it is | What you get from it |
@@ -136,6 +186,9 @@ storm disappearing from a later run's report after you ship the change.
 |---|---|---|
 | `anthropic.api-key` | env `ANTHROPIC_API_KEY` | LLM credentials — required |
 | `anthropic.model` | `claude-sonnet-4-6` | Model for classification calls |
+| `anthropic.max-tool-tokens` | 8192 | Token budget for autonomous tool-use turns; bigger than `max-tokens` because the final `submit_findings` can be large (a too-small cap truncates it and findings come back empty) |
+| `loop.autonomous` | **false** | `false` → deterministic pipeline (`AgentLoop`); `true` → LLM-driven loop (`AutonomousAgentLoop`). See §2b |
+| `loop.max-tool-calls` | 40 | Hard halt for the autonomous loop — caps LLM turns regardless of whether the model thinks it is done |
 | `loop.max-iterations` | 10 | Hard stop — the agent always halts |
 | `loop.slow-query-limit` | 10 | Candidates fetched from `pg_stat_statements` |
 | `loop.min-mean-time-ms` / `min-total-time-ms` | 50 / 500 | A query qualifies if it exceeds either threshold |

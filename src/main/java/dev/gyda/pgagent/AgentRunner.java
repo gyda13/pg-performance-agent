@@ -1,6 +1,9 @@
 package dev.gyda.pgagent;
 
 import dev.gyda.pgagent.agent.AgentLoop;
+import dev.gyda.pgagent.agent.AutonomousAgentLoop;
+import dev.gyda.pgagent.agent.PerformanceAgent;
+import dev.gyda.pgagent.config.AgentProperties;
 import dev.gyda.pgagent.model.AgentRunResult;
 import dev.gyda.pgagent.model.Classification;
 import dev.gyda.pgagent.model.Finding;
@@ -18,18 +21,26 @@ public class AgentRunner implements CommandLineRunner {
     private static final Logger log = LoggerFactory.getLogger(AgentRunner.class);
 
     private final AgentLoop agentLoop;
+    private final AutonomousAgentLoop autonomousLoop;
     private final EmailReporter emailReporter;
+    private final AgentProperties props;
 
-    public AgentRunner(AgentLoop agentLoop, EmailReporter emailReporter) {
+    public AgentRunner(AgentLoop agentLoop, AutonomousAgentLoop autonomousLoop,
+                       EmailReporter emailReporter, AgentProperties props) {
         this.agentLoop = agentLoop;
+        this.autonomousLoop = autonomousLoop;
         this.emailReporter = emailReporter;
+        this.props = props;
     }
 
     @Override
     public void run(String... args) {
         log.info("=== Postgres Performance Agent ===");
 
-        AgentRunResult result = agentLoop.run();
+        boolean autonomous = props.getLoop().isAutonomous();
+        log.info("Mode: {}", autonomous ? "AUTONOMOUS (LLM-driven)" : "PIPELINE (deterministic)");
+        PerformanceAgent agent = autonomous ? autonomousLoop : agentLoop;
+        AgentRunResult result = agent.run();
         List<Finding> findings = result.findings();
 
         if (findings.isEmpty()) {

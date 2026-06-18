@@ -2,6 +2,8 @@ package dev.gyda.pgagent.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.gyda.pgagent.config.AgentProperties;
+import dev.gyda.pgagent.interaction.ApplyApproval;
+import dev.gyda.pgagent.interaction.Console;
 import dev.gyda.pgagent.llm.LlmClient;
 import dev.gyda.pgagent.model.BenchmarkResult;
 import dev.gyda.pgagent.model.Classification;
@@ -73,8 +75,11 @@ class AgentLoopTest {
                 Optional.of(new ParamResolver.Resolution(
                         "SELECT id, email FROM customers WHERE id = 42", Map.of())));
 
+        // Auto-approve DB writes in tests by feeding "y" to the approval prompt.
+        ApplyApproval approval = new ApplyApproval(
+                new Console(new java.io.BufferedReader(new java.io.StringReader("y\n".repeat(10)))));
         loop = new AgentLoop(slowQueryTool, explainTool, tableInspectionTool, paramResolver,
-                hypoPGTool, benchmarkTool, applyTool, llm, new ObjectMapper(), props);
+                hypoPGTool, benchmarkTool, applyTool, llm, new ObjectMapper(), props, approval);
     }
 
     @Test
