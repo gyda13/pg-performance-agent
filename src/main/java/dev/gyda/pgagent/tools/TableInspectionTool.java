@@ -79,4 +79,45 @@ public class TableInspectionTool {
     private static Instant toInstant(Timestamp ts) {
         return ts != null ? ts.toInstant() : null;
     }
+
+    /**
+     * Focused selectivity view of one column: n_distinct, null fraction, and (when sharing real
+     * values is enabled) the most-common values with their frequencies. Lets the agent reason
+     * about whether an index would even help — a column where one value covers 90% of rows is a
+     * poor index candidate. Read-only.
+     */
+    public String columnDistribution(String tableName, String column, boolean includeValues) {
+        String schema = "public";
+        String table = tableName;
+        if (tableName.contains(".")) {
+            String[] parts = tableName.split("\\.", 2);
+            schema = parts[0];
+            table = parts[1];
+        }
+        final String tbl = table;
+        List<String> out = jdbc.query("""
+                SELECT n_distinct, null_frac,
+                       most_common_vals::text AS mcv,
+                       most_common_freqs::text AS mcf
+                FROM pg_stats
+                WHERE schemaname = ? AND tablename = ? AND attname = ?
+                """,
+                (rs, rowNum) -> {
+                    StringBuilder sb = new StringBuilder();
+                    sb.append(tbl).append(".").append(column)
+                      .append(": n_distinct=").append(rs.getDouble("n_distinct"))
+                      .append(" null_frac=").append(String.format("%.3f", rs.getDouble("null_frac")));
+                    if (includeValues) {
+                        sb.append(" most_common_vals=").append(rs.getString("mcv"))
+                          .append(" most_common_freqs=").append(rs.getString("mcf"));
+                    } else {
+                        sb.append(" (most-common values redacted — set privacy.share-data-values=true to include)");
+                    }
+                    return sb.toString();
+                },
+                schema, table, column);
+        return out.isEmpty()
+                ? "No pg_stats row for " + table + "." + column + " (column unknown, or table never ANALYZEd)."
+                : out.get(0);
+    }
 }

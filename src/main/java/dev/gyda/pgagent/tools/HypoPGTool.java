@@ -22,6 +22,15 @@ public class HypoPGTool {
     }
 
     public HypoResult test(String createIndexSql, String querySql) {
+        return testSet(java.util.List.of(createIndexSql), querySql);
+    }
+
+    /**
+     * Tests a set of hypothetical indexes together (HypoPG creates them all, then re-plans once).
+     * Lets the agent evaluate a multi-index fix — e.g. indexing both sides of a join — which a
+     * single-index test cannot reveal. The returned indexDef is the joined set, for the report.
+     */
+    public HypoResult testSet(java.util.List<String> createIndexSqls, String querySql) {
         if (!isHypoPGAvailable()) {
             throw new UnsupportedOperationException(
                     "hypopg extension not installed. See db/init/01-init.sql for setup instructions.");
@@ -32,22 +41,24 @@ public class HypoPGTool {
         String runnable = querySql.strip().replaceAll(";\\s*$", "");
         // hypopg_create_index expects a bare statement: no trailing semicolon, and no
         // CONCURRENTLY (meaningless for a hypothetical index, rejected by hypopg).
-        String indexDef = createIndexSql.strip()
-                .replaceAll(";\\s*$", "")
-                .replaceAll("(?i)\\s+CONCURRENTLY\\b", "");
+        java.util.List<String> indexDefs = createIndexSqls.stream()
+                .map(s -> s.strip().replaceAll(";\\s*$", "").replaceAll("(?i)\\s+CONCURRENTLY\\b", ""))
+                .toList();
 
         return jdbc.execute((java.sql.Connection conn) -> {
             try {
                 double costBefore = planCost(conn, runnable);
 
-                try (PreparedStatement ps = conn.prepareStatement("SELECT hypopg_create_index(?)")) {
-                    ps.setString(1, indexDef);
-                    ps.execute();
+                for (String indexDef : indexDefs) {
+                    try (PreparedStatement ps = conn.prepareStatement("SELECT hypopg_create_index(?)")) {
+                        ps.setString(1, indexDef);
+                        ps.execute();
+                    }
                 }
 
                 double costAfter = planCost(conn, runnable);
                 double speedup = costAfter > 0 ? costBefore / costAfter : 1.0;
-                return new HypoResult(indexDef, costBefore, costAfter, speedup);
+                return new HypoResult(String.join("; ", indexDefs), costBefore, costAfter, speedup);
             } finally {
                 // Must reset before returning the connection to the pool — hypopg indexes are session-scoped.
                 try (Statement st = conn.createStatement()) {

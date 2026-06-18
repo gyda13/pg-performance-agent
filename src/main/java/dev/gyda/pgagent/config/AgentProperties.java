@@ -32,6 +32,10 @@ public class AgentProperties {
         private String model = "claude-sonnet-4-6";
         private String baseUrl = "https://api.anthropic.com/v1/messages";
         private int maxTokens = 2048;
+        // The autonomous loop's final submit_findings call can be large (several findings with
+        // evidence text). A small cap truncates the tool-call JSON and the findings are lost, so
+        // tool-use turns get a bigger budget than the single-shot classification call.
+        private int maxToolTokens = 8192;
 
         public String getApiKey() { return apiKey; }
         public void setApiKey(String apiKey) { this.apiKey = apiKey; }
@@ -41,6 +45,8 @@ public class AgentProperties {
         public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
         public int getMaxTokens() { return maxTokens; }
         public void setMaxTokens(int maxTokens) { this.maxTokens = maxTokens; }
+        public int getMaxToolTokens() { return maxToolTokens; }
+        public void setMaxToolTokens(int maxToolTokens) { this.maxToolTokens = maxToolTokens; }
     }
 
     public static class Loop {
@@ -56,6 +62,14 @@ public class AgentProperties {
         private double minEstimatedSpeedup = 1.5;
         private double minMeasuredSpeedup = 1.1;
         private int maxRetriesPerQuery = 2;
+        // When true, the LLM drives the investigation via tool-calling (it chooses which tools
+        // to call and when to stop) instead of the fixed perceive→classify→test→verify pipeline.
+        // Java still owns perceive (the entry point) and every measurement; the irreversible
+        // apply path stays gated by apply-fixes. Default false: the deterministic loop is the safe default.
+        private boolean autonomous = false;
+        // Hard backstop for the autonomous loop — the agent must always halt (CLAUDE.md). Caps the
+        // number of LLM turns regardless of whether the model decides it is finished.
+        private int maxToolCalls = 40;
 
         public int getMaxIterations() { return maxIterations; }
         public void setMaxIterations(int maxIterations) { this.maxIterations = maxIterations; }
@@ -81,6 +95,10 @@ public class AgentProperties {
         public void setMinMeasuredSpeedup(double minMeasuredSpeedup) { this.minMeasuredSpeedup = minMeasuredSpeedup; }
         public int getMaxRetriesPerQuery() { return maxRetriesPerQuery; }
         public void setMaxRetriesPerQuery(int maxRetriesPerQuery) { this.maxRetriesPerQuery = maxRetriesPerQuery; }
+        public boolean isAutonomous() { return autonomous; }
+        public void setAutonomous(boolean autonomous) { this.autonomous = autonomous; }
+        public int getMaxToolCalls() { return maxToolCalls; }
+        public void setMaxToolCalls(int maxToolCalls) { this.maxToolCalls = maxToolCalls; }
     }
 
     public static class Report {

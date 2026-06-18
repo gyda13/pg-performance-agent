@@ -63,4 +63,13 @@ BEGIN
     EXECUTE 'SELECT id, email FROM customers WHERE email LIKE $1' USING '%@example.com';
   END LOOP;
 
+  -- Stale stats: `events` was never ANALYZEd (see 01-init.sql), so the planner under-estimates
+  -- its row count and the join against customers gets a poor plan. The fix is ANALYZE, not an
+  -- index — EXPLAIN ANALYZE shows the estimated-vs-actual rows diverging by orders of magnitude.
+  FOR v_id IN 1..20 LOOP
+    EXECUTE 'SELECT e.type, count(*) FROM events e
+             JOIN customers c ON c.id = e.customer_id
+             WHERE e.type = $1 GROUP BY e.type' USING 'view';
+  END LOOP;
+
 END$$;

@@ -58,6 +58,26 @@ public class ApplyTool {
         }
     }
 
+    // STALE_STATS fix: refresh planner statistics for one table. ANALYZE is a stats-only write
+    // (no data change), but it is still a write — gated by apply-fixes, and the identifier is
+    // validated so nothing but a bare table name reaches the server.
+    private static final Pattern TABLE_IDENT = Pattern.compile("(?i)^[a-z_][a-z0-9_]*(\\.[a-z_][a-z0-9_]*)?$");
+
+    public void analyze(String table) {
+        if (!props.getLoop().isApplyFixes()) {
+            throw new UnsupportedOperationException(
+                    "apply-fixes is disabled. Set pgagent.loop.apply-fixes=true and " +
+                    "spring.datasource.hikari.read-only=false to allow ANALYZE.");
+        }
+        String t = table.strip();
+        if (!TABLE_IDENT.matcher(t).matches()) {
+            throw new IllegalArgumentException("Refusing to ANALYZE — not a bare table identifier: " + t);
+        }
+        log.warn("APPLYING ANALYZE {} (stats-only write).", t);
+        jdbc.execute("ANALYZE " + t);
+        log.info("ANALYZE complete.");
+    }
+
     // EVALUATE rollback path: an applied index whose measured speedup fails the bar is removed.
     public void drop(String createIndexSql) {
         if (!props.getLoop().isApplyFixes()) {

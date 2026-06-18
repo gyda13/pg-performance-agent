@@ -71,6 +71,45 @@ For application-layer findings the agent stops at a precise, evidence-backed rec
 pathology + code-level fix + the numbers); applying it in your codebase is left to you, so the agent
 never needs access to your source.
 
+## Two ways to run it
+
+Same tools, same safety rules — the difference is *who decides the steps*.
+
+| Mode | Who drives | Cost / speed | When to use |
+|---|---|---|---|
+| **Pipeline** (default) | Fixed Java sequence: perceive → diagnose → classify → test → verify | ~1 LLM call per query, fast, fully predictable | Routine runs, reports you need to reproduce, tight budgets |
+| **Autonomous** | The LLM decides which tools to call, in what order, and when to stop | Many LLM calls (10–20×), slower, path varies per run | Open-ended investigation, cross-query correlation, novel cases |
+
+The **default is Pipeline** — cheap, predictable, and the right choice for most runs. Switch to
+autonomous with one config flag:
+
+```yaml
+pgagent:
+  loop:
+    autonomous: true   # default false → deterministic pipeline
+```
+
+Either way Java still does the perceive step (the entry point) and **every measurement** — the LLM
+never produces a number.
+
+## Database writes always require your approval
+
+In **both** modes, anything that writes to the database in Phase 3 — `CREATE INDEX`, `DROP INDEX`,
+`ANALYZE` — is shown to you verbatim, with HypoPG's *estimated* improvement as a preview, and runs
+only after you type `y`:
+
+```
+──────────── DATABASE WRITE — APPROVAL REQUIRED ────────────
+The agent wants to run this index against the database:
+    CREATE INDEX ON orders (created_at)
+Preview — HypoPG estimates 25.7x faster (estimated only; nothing applied yet).
+Execute this statement now? [y/N]
+```
+
+Read-only diagnostics (`EXPLAIN`, table inspection, HypoPG estimates) never prompt. If no console is
+attached, the answer defaults to "no" — the database is left unchanged rather than written
+unattended. (Phase 3 itself still requires `pgagent.loop.apply-fixes: true`.)
+
 ## Using it
 
 **Why:** it surfaces the queries actually costing you the most — ranked by total time, so it catches

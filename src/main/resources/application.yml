@@ -35,6 +35,9 @@ pgagent:
     api-key: ${ANTHROPIC_API_KEY:}
     model: claude-sonnet-4-6
     max-tokens: 2048
+    # Larger budget for autonomous tool-use turns — the final submit_findings call can be big,
+    # and a small cap truncates the tool-call JSON (findings come back empty).
+    max-tool-tokens: 8192
   loop:
     max-iterations: 10
     slow-query-limit: 10
@@ -51,6 +54,11 @@ pgagent:
     min-estimated-speedup: 1.5
     min-measured-speedup: 1.1
     max-retries-per-query: 2
+    # When true, the LLM drives the investigation via tool-calling instead of the fixed pipeline.
+    # Java still owns perceive + every measurement; ApplyTool stays gated by apply-fixes.
+    autonomous: false
+    # Hard halt for the autonomous loop — max LLM turns regardless of whether the model thinks it's done.
+    max-tool-calls: 40
   report:
     recipient-email: ${REPORT_RECIPIENT_EMAIL:}
   privacy:
