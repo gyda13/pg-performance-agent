@@ -549,7 +549,8 @@ public class AutonomousAgentLoop implements PerformanceAgent {
             ip.putObject(field).put("type", "string");
         }
         ArrayNode itemReq = item.putArray("required");
-        List.of("query", "classification", "pathology", "proposed_fix").forEach(itemReq::add);
+        List.of("query", "classification", "pathology", "root_cause", "evidence", "proposed_fix")
+                .forEach(itemReq::add);
         schema.putArray("required").add("findings");
         return schema;
     }

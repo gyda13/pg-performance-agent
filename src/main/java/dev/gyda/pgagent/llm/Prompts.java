@@ -136,7 +136,10 @@ public final class Prompts {
             When finished with all queries, call submit_findings exactly once. Each finding:
               { "query", "classification", "pathology", "confidence", "evidence", "root_cause",
                 "proposed_fix", "tradeoffs" }
-            where "query" must be the exact query text you were given.
+            where "query" must be the exact query text you were given. Every finding MUST include a
+            non-empty root_cause (a plain-language explanation of why the query is slow) and evidence
+            (the specific numbers and plan fragments that support it) — never leave them blank or fold
+            them into proposed_fix.
             """;
 
     /**
