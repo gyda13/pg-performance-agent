@@ -177,6 +177,60 @@ class AgentLoopTest {
     }
 
     @Test
+    void extensionDependentFixIsNotAppliedAndStaysUnverified() throws Exception {
+        // The pg_trgm/GIN case: the fix needs CREATE EXTENSION, which ApplyTool can't run. Phase 3
+        // must be skipped entirely (no apply, no approval prompt), not attempted and then rejected.
+        props.getLoop().setApplyFixes(true);
+
+        when(llm.complete(anyString(), anyString())).thenReturn("""
+                {
+                  "classification": "DB_PROBLEM",
+                  "pathology": "LEADING_WILDCARD",
+                  "evidence": "Seq Scan on customers, email LIKE",
+                  "root_cause": "No usable index for the LIKE pattern",
+                  "proposed_fix": "CREATE EXTENSION IF NOT EXISTS pg_trgm; CREATE INDEX idx_email_trgm ON customers USING gin (email gin_trgm_ops)",
+                  "tradeoffs": "GIN index size"
+                }
+                """);
+
+        List<Finding> findings = loop.run().findings();
+
+        assertThat(findings).hasSize(1);
+        assertThat(findings.get(0).verified()).isFalse();
+        verify(applyTool, never()).apply(anyString());
+        verify(benchmarkTool, never()).benchmark(anyString(), anyInt());
+    }
+
+    @Test
+    void createIndexEmbeddedInProseIsExtractedAndApplied() throws Exception {
+        props.getLoop().setApplyFixes(true);
+        props.getLoop().setBenchmarkRuns(3);
+
+        when(llm.complete(anyString(), anyString())).thenReturn("""
+                {
+                  "classification": "DB_PROBLEM",
+                  "pathology": "MISSING_INDEX",
+                  "evidence": "Seq Scan, rows=100000",
+                  "root_cause": "No index on customers.id",
+                  "proposed_fix": "DB layer: create the index CREATE INDEX idx_c_id ON customers(id); then retest the query",
+                  "tradeoffs": "write overhead"
+                }
+                """);
+        when(hypoPGTool.test(anyString(), anyString()))
+                .thenReturn(new HypoResult("CREATE INDEX idx_c_id ON customers(id)", 1000.0, 10.0, 100.0));
+        when(benchmarkTool.benchmark(anyString(), anyInt()))
+                .thenReturn(new BenchmarkResult(3, 45.0, 55.0, 50.0))
+                .thenReturn(new BenchmarkResult(3, 4.0, 6.0, 5.0));
+
+        List<Finding> findings = loop.run().findings();
+
+        assertThat(findings).hasSize(1);
+        assertThat(findings.get(0).verified()).isTrue();
+        // The index was isolated from the surrounding prose (no trailing "; then retest…").
+        verify(applyTool).apply("CREATE INDEX idx_c_id ON customers(id)");
+    }
+
+    @Test
     void malformedLlmResponseIsDiscardedGracefully() throws Exception {
         when(llm.complete(anyString(), anyString())).thenReturn("Sorry, I cannot help with that.");
 

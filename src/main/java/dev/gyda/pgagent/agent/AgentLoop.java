@@ -29,7 +29,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -239,7 +238,8 @@ public class AgentLoop implements PerformanceAgent {
 
             Optional<String> createIndex = extractCreateIndex(hypothesis.proposedFix());
             if (hypothesis.classification() != Classification.APP_PROBLEM
-                    && createIndex.isPresent() && props.getLoop().isApplyFixes() && paramsResolved) {
+                    && createIndex.isPresent() && !requiresExtension(hypothesis.proposedFix())
+                    && props.getLoop().isApplyFixes() && paramsResolved) {
                 int runs = props.getLoop().getBenchmarkRuns();
                 Double est = hypoResult != null ? hypoResult.estimatedSpeedup() : null;
                 if (!approval.approve("index", createIndex.get(), est)) {
@@ -475,14 +475,16 @@ public class AgentLoop implements PerformanceAgent {
         return sb.toString();
     }
 
+    private static final java.util.regex.Pattern CREATE_INDEX_STMT =
+            java.util.regex.Pattern.compile("(?i)CREATE\\s+(?:UNIQUE\\s+)?INDEX\\b[^;\\n]*");
+
     private static Optional<String> extractCreateIndex(String proposedFix) {
-        return Arrays.stream(proposedFix.split("\n"))
-                .map(String::strip)
-                .filter(line -> {
-                    String up = line.toUpperCase();
-                    return up.startsWith("CREATE") && up.contains("INDEX");
-                })
-                .findFirst();
+        java.util.regex.Matcher m = CREATE_INDEX_STMT.matcher(proposedFix);
+        return m.find() ? Optional.of(m.group().strip()) : Optional.empty();
+    }
+
+    private static boolean requiresExtension(String proposedFix) {
+        return proposedFix.toUpperCase().contains("CREATE EXTENSION");
     }
 
     private static String fmt(double d) {

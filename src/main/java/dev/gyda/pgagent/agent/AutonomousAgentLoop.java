@@ -288,6 +288,13 @@ public class AutonomousAgentLoop implements PerformanceAgent {
         if (!props.getLoop().isApplyFixes()) {
             return "skipped: apply-fixes is disabled (read-only). Cannot benchmark or apply an index.";
         }
+        // Validate BEFORE prompting the user: ApplyTool only runs a bare CREATE INDEX, so reject
+        // multi-statement DDL or anything needing a CREATE EXTENSION here rather than asking the
+        // user to approve a write that would then fail.
+        if (!ApplyTool.isApplicable(createIndexSql)) {
+            return "skipped: not a standalone CREATE INDEX (multi-statement, or needs a CREATE EXTENSION). "
+                    + "Propose a single CREATE INDEX, or report this as an application/extension recommendation instead.";
+        }
         Optional<ParamResolver.Resolution> resolved = paramResolver.resolve(query);
         if (resolved.isEmpty()) {
             return "skipped: parameters could not be resolved, so the query cannot be benchmarked.";

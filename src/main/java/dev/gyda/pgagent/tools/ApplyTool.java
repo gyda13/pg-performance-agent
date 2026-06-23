@@ -26,6 +26,14 @@ public class ApplyTool {
         this.props = props;
     }
 
+    public static boolean isApplicable(String ddlSql) {
+        if (ddlSql == null) return false;
+        String s = ddlSql.strip().replaceAll(";\\s*$", "");
+        if (s.contains(";")) return false;   // a second statement remains
+        String up = s.toUpperCase();
+        return up.startsWith("CREATE INDEX") || up.startsWith("CREATE UNIQUE INDEX");
+    }
+
     public void apply(String ddlSql) {
         if (!props.getLoop().isApplyFixes()) {
             throw new UnsupportedOperationException(
@@ -34,12 +42,12 @@ public class ApplyTool {
         }
 
         String statement = ddlSql.strip().replaceAll(";\\s*$", "");
-        String upper = statement.toUpperCase();
-        if (!upper.startsWith("CREATE INDEX") && !upper.startsWith("CREATE UNIQUE INDEX")) {
+        if (!isApplicable(ddlSql)) {
             throw new IllegalArgumentException(
-                    "ApplyTool only executes CREATE [UNIQUE] INDEX statements. Got: "
+                    "ApplyTool only executes a single CREATE [UNIQUE] INDEX statement. Got: "
                     + abbreviate(statement));
         }
+        String upper = statement.toUpperCase();
 
         // CONCURRENTLY so the build never takes a write-blocking lock on the table.
         // Note: CONCURRENTLY cannot run inside a transaction block — relies on autocommit.
